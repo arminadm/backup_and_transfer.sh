@@ -1,6 +1,5 @@
 #!/bin/bash
 
-
 # Load environment variables from .env file
 ENV_FILE="./envs/receiver/.env"
 
@@ -47,7 +46,7 @@ send_telegram_notification() {
 # Function to manage backups
 manage_backups() {
     # Get the list of backup files, sorted by modification time (oldest first)
-    backup_files=($(ls -1t "$BACKUP_DIR" | sort -n))
+    backup_files=($(ls -1t "$BACKUP_DIR"))
 
     # Initialize variables for the notification message
     deleted_files=""
@@ -57,22 +56,44 @@ manage_backups() {
     if [ $total_files -gt 5 ]; then
         files_to_delete=("${backup_files[@]:5}")
         for file in "${files_to_delete[@]}"; do
+            file_size=$(du -sh "$BACKUP_DIR/$file" | cut -f1)
             rm -f "$BACKUP_DIR/$file"
-            deleted_files+="$file\n"
+            deleted_files+="$file ($file_size)\n"
         done
     fi
 
-    # Prepare the notification message
-    message="Backup Management Run Completed:
-- Total backups before cleanup: $total_files
-- Total backups after cleanup: ${#backup_files[@]:0:5}
-- Deleted files:
-$deleted_files"
+    # List the remaining files after deletion, with sizes
+    available_files=""
+    for file in "${backup_files[@]:0:5}"; do
+        if [ -f "$BACKUP_DIR/$file" ]; then
+            file_size=$(du -sh "$BACKUP_DIR/$file" | cut -f1)
+            available_files+="$file ($file_size)\n"
+        fi
+    done
 
+    # Remove trailing newline from deleted_files and available_files
+    deleted_files=$(echo -e "$deleted_files" | sed 's/\\n$//')
+    available_files=$(echo -e "$available_files" | sed 's/\\n$//')
+
+    # Prepare the notification message
+    message=$(cat <<EOF
+Receiver Server Speaking:
+
+Backup Management Run Completed:
+- Total backups before cleanup: $total_files
+- Total backups after cleanup: $((${#backup_files[@]} - ${#files_to_delete[@]}))
+- Deleted files:
+$deleted_files
+- Available files:
+$available_files
+
+#backup
+#receiver
+EOF
+)
     # Send the notification
     send_telegram_notification "$message"
 }
 
 # Run the backup management
 manage_backups
-
