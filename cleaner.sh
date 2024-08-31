@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Load environment variables from .env file
-ENV_FILE="./envs/receiver/.env"
+ENV_FILE="./envs/.env"
 
 if [ -f "$ENV_FILE" ]; then
     export $(grep -v '^#' "$ENV_FILE" | xargs)
@@ -72,23 +72,25 @@ manage_backups() {
     done
 
     # Remove trailing newline from deleted_files and available_files
-    deleted_files=$(echo -e "$deleted_files" | sed 's/\\n$//')
-    available_files=$(echo -e "$available_files" | sed 's/\\n$//')
+    deleted_files=$(echo -e "$deleted_files" | sed 's/\n$//')
+    available_files=$(echo -e "$available_files" | sed 's/\n$//')
 
     # Prepare the notification message
     message=$(cat <<EOF
-Receiver Server Speaking:
+$WHO Server Speaking:
 
 Backup Management Run Completed:
 - Total backups before cleanup: $total_files
 - Total backups after cleanup: $((${#backup_files[@]} - ${#files_to_delete[@]}))
+
 - Deleted files:
 $deleted_files
+
 - Available files:
 $available_files
 
 #backup
-#receiver
+#${WHO,,}
 EOF
 )
     # Send the notification

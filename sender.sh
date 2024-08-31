@@ -1,15 +1,18 @@
 #!/bin/bash
 
-# Path to your .env file
-ENV_FILE="./envs/sender/.env"
+# Load environment variables from .env file
+ENV_FILE="./envs/.env"
 
-# Check if .env file exists
 if [ -f "$ENV_FILE" ]; then
-    # Export variables from .env file
     export $(grep -v '^#' "$ENV_FILE" | xargs)
 else
     echo ".env file not found at $ENV_FILE"
     exit 1
+fi
+
+if [ ${WHO,,} != "sender" ]; then
+	echo "sender script only works on sender machine: check WHO env"
+	exit 1
 fi
 
 # Function to send a Telegram notification with retries
@@ -17,7 +20,6 @@ send_telegram_notification() {
     local message=$1
     local max_retries=10
     local retry_count=0
-    local success=false
 
     if [ "$SEND_NOTIFICATION" = "true" ]; then
         while [ $retry_count -lt $max_retries ]; do
@@ -29,20 +31,39 @@ send_telegram_notification() {
                 "$TELEGRAM_BYPASS_URL/bot$TELEGRAM_BOT_API_TOKEN/sendMessage")
 
             if [ "$response" -eq 200 ]; then
-                success=true
-                break
+                return 0  # Success
             else
                 echo "Failed to send Telegram notification. Attempt $((retry_count+1)) of $max_retries. HTTP status code: $response"
                 retry_count=$((retry_count+1))
-                sleep 2  # Wait for 2 seconds before retrying
+                sleep 2
             fi
         done
 
-        if [ "$success" = false ]; then
-            echo "Failed to send Telegram notification after $max_retries attempts."
-            exit 1  # Exit or handle the error appropriately
-        fi
+        echo "Failed to send Telegram notification after $max_retries attempts."
+        return 1
     fi
+}
+
+# Function to handle errors and send notifications
+handle_error() {
+    local error_msg=$1
+    local context=$2
+    local message=$(cat <<EOF
+Sender Server Speaking:
+
+Failed during $context:
+$error_msg
+
+Backup file name: $ZIP_FILE
+
+#backup
+#sender
+#bug
+#error
+EOF
+)
+    send_telegram_notification "$message"
+    exit 1
 }
 
 # Variables
@@ -53,43 +74,76 @@ DUMP_FILE="$BACKUP_DIR/dump_$TIMESTAMP.sql"
 # Create backup directory if it doesn't exist
 mkdir -p "$BACKUP_DIR"
 
-# Send telegram notification on progress start point
-send_telegram_notification "Backup Progress started on sender machince
-time: $TIMESTAMP"
+# Send telegram notification at progress start
+available_files=""
+backup_files=($(ls -1t "$BACKUP_DIR"))
+for file in "${backup_files[@]}"; do
+    if [ -f "$BACKUP_DIR/$file" ]; then
+        file_size=$(du -sh "$BACKUP_DIR/$file" | cut -f1)
+        available_files+="$file ($file_size)\n"
+    fi
+done
+
+# Remove trailing newline from available_files
+available_files=$(echo -e "$available_files" | sed 's/\n$//')
+
+send_telegram_notification "$(cat <<EOF
+Sender Server Speaking:
+
+Backup Progress Started!
+- Available Current Backups:
+$available_files
+
+Backup file name: $ZIP_FILE
+
+#backup
+#sender
+EOF
+)"
 
 # Dump PostgreSQL database using Docker
-sudo docker exec -t "$DOCKER_CONTAINER_NAME" pg_dumpall -c -U "$DB_USER" > "$DUMP_FILE"
-
-# Check if dump command failed
+error_msg=$(sudo docker exec -t "$DOCKER_CONTAINER_NAME" pg_dumpall -c -U "$DB_USER" > "$DUMP_FILE" 2>&1)
 if [ $? -ne 0 ]; then
-	send_telegram_notification "Backup creation Failed (db dump) on sender server at time: $TIMESTAMP"
-	exit 1
+    handle_error "$error_msg" "database dump"
 fi
 
 # Create a ZIP file containing the database dump and media files
-zip -r "$BACKUP_DIR/$ZIP_FILE" "$DUMP_FILE" "$MEDIA_DIR" "$MIGRATION_DIR"
-
-# Check if zip command failed
+error_msg=$(zip -r "$BACKUP_DIR/$ZIP_FILE" "$DUMP_FILE" "$MEDIA_DIR" "$MIGRATION_DIR" 2>&1)
 if [ $? -ne 0 ]; then
-	send_telegram_notification "Backup creation Failed (zip) on sender server at time: $TIMESTAMP"
-    exit 1
+    handle_error "$error_msg" "creating zip folder"
 fi
 
 # Send telegram notification that backup was created successfully
-send_telegram_notification "Transfer backup progress started from sender server at time: $TIMESTAMP"
+send_telegram_notification "$(cat <<EOF
+Sender Server Speaking:
+
+Transfer backup progress started!
+Backup file name: $ZIP_FILE
+
+#backup
+#sender
+EOF
+)"
 
 # Transfer the backup to the remote server using scp with SSH key and skip host key checking
-scp -o StrictHostKeyChecking=no -i "$SSH_PRIVATE_KEY_PATH" "$BACKUP_DIR/$ZIP_FILE" "$REMOTE_USER@$REMOTE_HOST:$REMOTE_DIR"
-
-# Check if scp command failed
+error_msg=$(scp -o StrictHostKeyChecking=no -i "$SSH_PRIVATE_KEY_PATH" "$BACKUP_DIR/$ZIP_FILE" "$REMOTE_USER@$REMOTE_HOST:$REMOTE_DIR" 2>&1)
 if [ $? -ne 0 ]; then
-	send_telegram_notification "Backup transfer failed (scp) on sender server at time: $TIMESTAMP"
-    exit 1
-else
-	# Get details of the transferred files
-    	FILE_DETAILS=$(ls -lh "$BACKUP_DIR/$ZIP_FILE")
-
-    	# Send a success notification with file details
-    	send_telegram_notification "Backup transfer completed successfully at time: $TIMESTAMP. Transferred files:
-	$FILE_DETAILS"
+    handle_error "$error_msg" "SCP transfer"
 fi
+
+# Get details of the transferred files
+FILE_DETAILS=$(ls -lh "$BACKUP_DIR/$ZIP_FILE")
+
+# Send a success notification with file details
+send_telegram_notification "$(cat <<EOF
+Sender Server Speaking:
+
+Transfer Completed Successfully!
+Backup file name: $ZIP_FILE
+Details:
+$FILE_DETAILS
+
+#backup
+#sender
+EOF
+)"
